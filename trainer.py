@@ -40,7 +40,7 @@ class SRGANTrainer():
         # Extract the convolutional layers of the VGG19 network used to compute 
         # the VGG content loss.
         self.vgg = models.vgg19(pretrained = True).to(self.device)
-        self.vgg = self.vgg[:19]
+        self.vgg = self.vgg.features[:19]
         self.vgg.eval()
 
         # Create the training and test dataset and loaders:
@@ -106,7 +106,7 @@ class SRGANTrainer():
     @staticmethod
     def adversarial_loss(predictions, label = 1):
         """Compute Adversarial Binary Cross Entropy Loss"""
-        gt = torch.ones_like(predictions) if label is 1 else \
+        gt = torch.ones_like(predictions) if label == 1 else \
              torch.zeros_like(predictions)
         floss = nn.BCEWithLogitsLoss()
         return floss(predictions, gt)
@@ -120,10 +120,15 @@ class SRGANTrainer():
         if epoch is int(self.num_epochs / 2) + 1:
             self.adjust_learning_rate(factor = 0.1)
 
-        trainbar  = tqdm(self.train_loader)
+        # trainbar  = tqdm(self.train_loader)
+        trainitr = iter(self.train_loader)
+        train_steps = int(self.train_loader.__len__()/self.batch_size)
+
         gen_loss, disc_loss = [], []
         
-        for lrbatch, hrbatch in trainbar:
+        for _ in range(train_steps):
+            lrbatch, hrbatch = next(trainitr)
+
             # Move to default device:
             lrbatch = lrbatch.to(self.device)
             hrbatch = hrbatch.to(self.device)
@@ -169,7 +174,7 @@ class SRGANTrainer():
             # Book-keeping updates:
             info  = "[TRAIN][Epoch %4d] G: %.4f, D: %.4f"
             info  = info % (epoch, perceptual_loss, discriminator_loss)
-            trainbar.set_description(desc = info)
+            # trainbar.set_description(desc = info)
             self.update_board(perceptual_loss, discriminator_loss)
 
             gen_loss.append(perceptual_loss)
@@ -177,15 +182,19 @@ class SRGANTrainer():
 
         # Save epoch results:
         self.save(epoch)
+            
+        # Trackers for SSIM and PSNR:
+        ssim, psnr = [], []
 
         # Evaluate the epoch:
         with torch.no_grad():
-            
-            # Trackers for SSIM and PSNR:
-            ssim, psnr = [], []
 
-            testbar = iter(self.test_loader)
-            for lr, hr in testbar:
+            # testbar = iter(self.test_loader)
+            testitr = iter(self.test_loader)
+            test_steps = int(self.test_loader.__len__()/self.batch_size)
+
+            for _ in range(test_steps):
+                lr, hr = next(testitr)
                 # Generate Super-Resolved (SR) image and compute test metrics:
                 sr = self.generator(lr)
                 ssim.append(pytorch_msssim.ssim(sr, hr, data_range = 1))
@@ -194,15 +203,17 @@ class SRGANTrainer():
                 # Print mean PSNR and SSIM results:
                 info = '[TEST][Epoch %4d] PSNR: %.4f dB SSIM: %.4f'
                 info = info % (mean(psnr), mean(ssim))
-                testbar.set_description(desc = info)
+                # testbar.set_description(desc = info)
 
         # Return training losses and test metrics for the epoch:
         return mean(gen_loss), mean(disc_loss), mean(ssim), mean(psnr)
     
     def save(self, epoch):
         """Save Generator & Discriminator State"""
-        torch.save(self.generator.state_dict(), 'gen_epoch_%d.pth' % epoch)
-        torch.save(self.discriminator.state_dict(), 'disc_epoch_%d.pth' % epoch)
+        gpath = 'checkpoints/gen_epoch_%d.pth' % epoch
+        dpath = 'checkpoints/disc_epoch_%d.pth' % epoch
+        torch.save(self.generator.state_dict(), gpath)
+        torch.save(self.discriminator.state_dict(), dpath)
 
     def update_board(self, genloss, disloss):
         # Log losses to tensorboard:

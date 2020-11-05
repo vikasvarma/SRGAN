@@ -1,2 +1,9 @@
 
 .vscode/settings.json
+test-data
+train-data
+log
+train_results.csv
+__pycache__
+model/__pycache__
+.DS_Store

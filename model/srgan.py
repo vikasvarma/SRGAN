@@ -108,14 +108,15 @@ class Generator(nn.Module):
         """
         TODO
         """
-        
+        super(Generator, self).__init__()
+
         # Preliminary feature extraction conv layer:
         self.conv1  = nn.Conv2d(3, 64, 9, 1, 4, padding_mode = 'replicate')
         self.prelu1 = nn.PReLU()
 
         # Create residual blocks:
         self.residual_blocks = [ResidualBlock(64) for _ in range(num_blocks)]
-        self.residual_blocks = nn.Sequential(*self.ResidualBlocks)
+        self.residual_blocks = nn.Sequential(*self.residual_blocks)
 
         # Create terminal convolutional block:
         self.conv2 = nn.Conv2d(64, 64, 3, 1, 1, padding_mode = 'replicate')
@@ -170,21 +171,21 @@ class Discriminator(nn.Module):
 
         for n in range(num_blocks):
             # Compute the number of output channels:
-            in_size  = 3 if n is 1 else 64 * int(n // 2)
-            out_size = 64 * int((n+1) // 2)
+            in_size  = 3 if n == 0 else 64 * ( 2 ** int((n-1)/2) )
+            out_size = 64 * ( 2 ** int(n/2) )
 
             # Convolutional Layer:
             layers.append(nn.Conv2d(
                 in_channels  = in_size, 
                 out_channels = out_size, 
                 kernel_size  = 3, 
-                stride       = 1 + int((n+1) % 2), 
+                stride       = 1 + int(n % 2), 
                 padding      = 1, 
                 padding_mode = 'replicate'
             ))
 
             # NOTE: Skip appending a batch norm layer for the first block:
-            if n is not 1:
+            if n != 0:
                 layers.append(nn.BatchNorm2d(num_features = out_size))
 
             layers.append(nn.LeakyReLU())
@@ -199,7 +200,7 @@ class Discriminator(nn.Module):
         
         # Construct the head:
         self.fc1 = nn.Linear(
-            in_features  = 64 * int((num_blocks+1) // 2),
+            in_features  = 64 * (2 ** int((num_blocks - 1)/2)),
             out_features = 1024
         )
         self.lrelu = nn.LeakyReLU(0.2)
