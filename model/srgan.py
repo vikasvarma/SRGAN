@@ -129,7 +129,7 @@ class Generator(nn.Module):
         self.scaling_blocks = nn.Sequential(*self.scaling_blocks)
 
         # Terminal convolution:
-        self.conv3 = nn.Conv2d(256, 3, 9, 1, 4, padding_mode = 'replicate')
+        self.conv3 = nn.Conv2d(64, 3, 9, 1, 4, padding_mode = 'replicate')
 
     def forward(self, input):
         """
@@ -199,12 +199,10 @@ class Discriminator(nn.Module):
         self.pooling = nn.AdaptiveAvgPool2d((6, 6))
         
         # Construct the head:
-        self.fc1 = nn.Linear(
-            in_features  = 64 * (2 ** int((num_blocks - 1)/2)),
-            out_features = 1024
-        )
+        out_channels = 64 * (2 ** int((num_blocks - 1)/2))
+        self.fc1 = nn.Linear(out_channels * 6 * 6, 1024)
         self.lrelu = nn.LeakyReLU(0.2)
-        self.fc2 = nn.Linear(in_features = 1024, out_features = 1)
+        self.fc2 = nn.Linear(1024, 1)
 
     def forward(self, input):
         """
@@ -214,7 +212,6 @@ class Discriminator(nn.Module):
         batch_size = input.size(0)
         output = self.conv_blocks(input)
         output = self.pooling(output)
-        output = output.view(batch_size, -1)
-        score  = self.fc2(self.lrelu(self.fc1(output)))
+        score  = self.fc2(self.lrelu(self.fc1(output.view(batch_size,-1))))
 
         return score

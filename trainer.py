@@ -1,13 +1,11 @@
 import torch
-import torchvision
-import datetime
 import pytorch_msssim
+import os
 
 from torch import nn
 from model import srgan
 from torch import optim
 from torchvision import models
-from collections import namedtuple
 from model.dataset import SRDataset
 from torch.utils.data import DataLoader
 from torch.utils import tensorboard
@@ -20,12 +18,11 @@ class SRGANTrainer():
 
     def __init__(
         self, 
-        train_data,
-        test_data,
+        data_folder,
         logdir = "./log/",
-        num_iterations = 2e5,
+        num_iterations = 1e5,
         num_workers = 4,
-        batch_size = 64
+        batch_size = 4
     ):
         """
         """
@@ -36,6 +33,7 @@ class SRGANTrainer():
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.loss_factor = 1e-3
+        self.display_step = 1
         
         # Extract the convolutional layers of the VGG19 network used to compute 
         # the VGG content loss.
@@ -44,19 +42,11 @@ class SRGANTrainer():
         self.vgg.eval()
 
         # Create the training and test dataset and loaders:
-        self.train_dataset = SRDataset(train_data, mode='train', scale_factor=4)
-        self.test_dataset = SRDataset(test_data, mode='test', scale_factor=4)
-
-        self.train_loader = DataLoader(
-            self.train_dataset, 
+        self.dataset = SRDataset(data_folder, mode='train', scale_factor=4)
+        self.loader  = DataLoader(
+            self.dataset, 
             batch_size = self.batch_size, 
             shuffle = True,
-            num_workers = self.num_workers
-        )
-        self.test_loader = DataLoader(
-            self.test_dataset, 
-            batch_size = self.batch_size, 
-            shuffle = False,
             num_workers = self.num_workers
         )
 
@@ -77,7 +67,7 @@ class SRGANTrainer():
 
         # Book keeping flags:
         self.num_iterations = num_iterations
-        self.num_epochs = int(num_iterations / self.train_dataset.__len__() + 1)
+        self.num_epochs = int(num_iterations / self.dataset.__len__() + 1)
 
     def __getoptimizer__(self, net):
         return optim.Adam(
@@ -120,15 +110,10 @@ class SRGANTrainer():
         if epoch is int(self.num_epochs / 2) + 1:
             self.adjust_learning_rate(factor = 0.1)
 
-        # trainbar  = tqdm(self.train_loader)
-        trainitr = iter(self.train_loader)
-        train_steps = int(self.train_loader.__len__()/self.batch_size)
-
-        gen_loss, disc_loss = [], []
+        gen_loss, disc_loss, psnr, ssim = [], [], [], []
+        trainbar = tqdm(self.loader)
         
-        for _ in range(train_steps):
-            lrbatch, hrbatch = next(trainitr)
-
+        for lrbatch, hrbatch in trainbar:
             # Move to default device:
             lrbatch = lrbatch.to(self.device)
             hrbatch = hrbatch.to(self.device)
@@ -170,48 +155,78 @@ class SRGANTrainer():
             self.dis_optimizer.zero_grad()
             discriminator_loss.backward()
             self.dis_optimizer.step()
-
-            # Book-keeping updates:
-            info  = "[TRAIN][Epoch %4d] G: %.4f, D: %.4f"
-            info  = info % (epoch, perceptual_loss, discriminator_loss)
-            # trainbar.set_description(desc = info)
-            self.update_board(perceptual_loss, discriminator_loss)
-
-            gen_loss.append(perceptual_loss)
-            disc_loss.append(discriminator_loss)
-
-        # Save epoch results:
-        self.save(epoch)
             
-        # Trackers for SSIM and PSNR:
-        ssim, psnr = [], []
-
-        # Evaluate the epoch:
-        with torch.no_grad():
-
-            # testbar = iter(self.test_loader)
-            testitr = iter(self.test_loader)
-            test_steps = int(self.test_loader.__len__()/self.batch_size)
-
-            for _ in range(test_steps):
-                lr, hr = next(testitr)
-                # Generate Super-Resolved (SR) image and compute test metrics:
-                sr = self.generator(lr)
-                ssim.append(pytorch_msssim.ssim(sr, hr, data_range = 1))
-                psnr.append(10*log10((hr.max()**2) / self.content_loss(sr,hr)))
-
-                # Print mean PSNR and SSIM results:
-                info = '[TEST][Epoch %4d] PSNR: %.4f dB SSIM: %.4f'
-                info = info % (mean(psnr), mean(ssim))
-                # testbar.set_description(desc = info)
-
+            # Evaludate train prediction:
+            ssim_, psnr_ = self.__getmetrics__(srbatch, hrbatch)
+            
+            # Book-keeping updates:
+            self.update_board(perceptual_loss, discriminator_loss)
+            
+            gen_loss.append(perceptual_loss.item())
+            disc_loss.append(discriminator_loss.item())
+            ssim.append(ssim_)
+            psnr.append(psnr_)
+            
+            # Update the training bar:
+            info = "[TRAIN][Epoch %4d] G: %.4f, D: %.4f, PSNR: %.4f, SSIM: %.4f"
+            info = info % (epoch, mean(gen_loss), mean(disc_loss), 
+                           mean(ssim), mean(psnr))
+            trainbar.set_description(desc = info)
+        
         # Return training losses and test metrics for the epoch:
         return mean(gen_loss), mean(disc_loss), mean(ssim), mean(psnr)
     
+    def __getmetrics__(self, sr, hr):
+        # Compute the quality metrics of a super resolved image against a 
+        # high-resolution ground truth.
+        with torch.no_grad():
+            ssim = pytorch_msssim.ssim(sr, hr, data_range=1, nonnegative_ssim=True, size_average=False) #(N,)
+            ssim = torch.mean(ssim).item()
+            psnr = 10*log10((hr.max()**2) / self.content_loss(sr,hr))
+        
+        return ssim, psnr
+      
+    def evaluate(self, data_folder):
+        
+        dataset = SRDataset(data_folder, mode='test', scale_factor=4)
+        loader  = DataLoader(
+            dataset, 
+            batch_size = self.batch_size, 
+            shuffle = False,
+            num_workers = self.num_workers
+        )
+        
+        # Trackers for SSIM and PSNR:
+        ssim, psnr = [], []
+        self.generator.eval()
+
+        # Evaluate against a test dataset:
+        with torch.no_grad():
+
+            progressbar = iter(loader)
+            
+            for lr, hr in progressbar:
+                # Generate Super-Resolved (SR) image and compute test metrics:
+                sr = self.generator(lr)
+                
+                ssim_, psnr_ = self.__getmetrics__(sr, hr)
+                ssim.append(ssim_)
+                psnr.append(psnr_)
+
+                # Update the evaludation bar:
+                info = '[TEST] PSNR: %.4f dB SSIM: %.4f'
+                info = info % (mean(psnr), mean(ssim))
+                progressbar.set_description(desc = info)
+                
+        return mean(ssim), mean(psnr)
+    
     def save(self, epoch):
         """Save Generator & Discriminator State"""
-        gpath = 'checkpoints/gen_epoch_%d.pth' % epoch
-        dpath = 'checkpoints/disc_epoch_%d.pth' % epoch
+        if not os.path.exists('checkpoints'):
+            os.mkdir('checkpoints')
+        
+        gpath = os.path.join('checkpoints', 'gen_epoch_%d.pth' % epoch)
+        dpath = os.path.join('checkpoints', 'disc_epoch_%d.pth' % epoch)
         torch.save(self.generator.state_dict(), gpath)
         torch.save(self.discriminator.state_dict(), dpath)
 

@@ -7,3 +7,4 @@ train_results.csv
 __pycache__
 model/__pycache__
 .DS_Store
+*.pth
